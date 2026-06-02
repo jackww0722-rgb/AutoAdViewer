@@ -1,0 +1,9 @@
+debug_cells_check/
+__pycache__/
+執行.bat
+adb_tools/
+.vscode/
+debug_dumps/
+logs/
+.venv/
+venv/
