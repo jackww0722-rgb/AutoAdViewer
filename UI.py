@@ -45,11 +45,24 @@ class DashboardUI:  # 把名字從 BotUI 改掉，明確表示這只是一個「
         """建構畫面元件 (排版專用)"""
         # --- 模式選擇 ---
         self.task_mode_var = tk.StringVar(value="game")
-        
+        self.auto_lottery_var = tk.BooleanVar(value=False)
         frame_mode = ttk.LabelFrame(self.root, text="任務模式", padding=10)
         frame_mode.pack(fill="x", padx=10, pady=10)
         ttk.Radiobutton(frame_mode, text="遊戲廣告", variable=self.task_mode_var, value="game").pack(anchor="w")
         ttk.Radiobutton(frame_mode, text="步數廣告", variable=self.task_mode_var, value="steps").pack(anchor="w")
+        # 縮排連動勾選框 (用 ttk.Checkbutton，加 padx=20 做出質感縮排)
+        self.chk_auto_lottery = ttk.Checkbutton(
+            frame_mode, 
+            text="看完廣告自動抽獎", 
+            variable=self.auto_lottery_var
+        )
+        self.chk_auto_lottery.pack(anchor="w", padx=20, pady=2)
+
+        # 純粹自動抽獎單選鈕 (value 設為 "lottery")
+        ttk.Radiobutton(frame_mode, text="自動抽獎", variable=self.task_mode_var, value="lottery").pack(anchor="w")
+
+        self.task_mode_var.trace_add("write", self._on_mode_changed)
+        self._on_mode_changed()
 
         # --- 狀態顯示 ---
         self.label_status = ttk.Label(self.root, text="狀態：待命中", foreground="green", font=("微軟正黑體", 12))
@@ -85,9 +98,10 @@ class DashboardUI:  # 把名字從 BotUI 改掉，明確表示這只是一個「
         # 3. 實例化新的大腦
         selected_job = self.task_mode_var.get()
         self.active_bot_instance = AdWatcherBot(selected_job)
+        self.active_bot_instance.auto_lottery_enabled = self.auto_lottery_var.get()
         
         # 4. 把大腦丟進背景執行緒
-        self.bot_thread = threading.Thread(target=self.active_bot_instance.run, daemon=True)
+        self.bot_thread = threading.Thread(target=self.active_bot_instance.start_task, daemon=True)
         self.bot_thread.start()
         self.monitor_bot_thread()
 
@@ -102,8 +116,6 @@ class DashboardUI:  # 把名字從 BotUI 改掉，明確表示這只是一個「
         signals.set_stop()
         self.reset_ui_state()
 
-
-
     def monitor_bot_thread(self):
         """
         巡邏員：負責檢查背景的大腦是否還活著
@@ -115,6 +127,16 @@ class DashboardUI:  # 把名字從 BotUI 改掉，明確表示這只是一個「
         else:
             # 如果發現執行緒已經死了 (自然結束或被例外中斷)，就執行重置
             self.reset_ui_state()
+
+    def _on_mode_changed(self, *args):
+        """ 當任務模式單選鈕切換時觸發 """
+        current_mode = self.task_mode_var.get()
+        
+        # 只有在「步數廣告 (steps)」模式下，連動勾選框才有用
+        if current_mode == "steps":
+            self.chk_auto_lottery.config(state="normal")
+        else:
+            self.chk_auto_lottery.config(state="disabled")
 
     def reset_ui_state(self):
         """
@@ -135,7 +157,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     
     # 稍微把視窗拉大一點點，配合銳利化後的字體
-    root.geometry("320x260") 
+    root.geometry("320x305") 
     
     app = DashboardUI(root)
     root.mainloop()

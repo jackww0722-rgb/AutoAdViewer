@@ -12,25 +12,19 @@ class AdWatcherBot:
 
         self.adb = AdbController(self.sysconfig, self.adbconfig)
         self.vision = ImageFinder(self.sysconfig, self.visionconfig)
-
-        # 🌟 1. 設定初始狀態
-        self.current_state = "IDLE"
         
-        # 🌟 2. 建立「狀態分發表 (Dispatch Table)」
+        # 🌟 建立「狀態分發表 (Dispatch Table)」
         # 什麼狀態，就對應執行哪個函數
+        self.job_type = job_type_str
         if job_type_str == "game":
             self.task = TaskProfiles.GAME_AD
         elif job_type_str == "steps":
             self.task = TaskProfiles.STEP_AD
+        elif job_type_str == "lottery":
+            self.task = TaskProfiles.LOTTERY
         else:
             raise ValueError(f"未知的任務類型: {job_type_str}")
-
-        self.state_handlers = {
-            "IDLE": self.handle_idle,
-            "WAIT_CONFIRM": self.handle_wait_confirm,
-            "WATCHING_AD": self.handle_watching_ad,
-        }
-
+        self.auto_lottery_enabled: bool = False
         logger.info(f"🤖 機器人啟動，當前任務：{self.task['name']}")
       
     def wait_for_image(self, image_name: str | list[str], timeout: int = 10, interval: float = 1.0):
@@ -67,42 +61,126 @@ class AdWatcherBot:
     #==========================================
     #------------------主程式------------------
     #==========================================
+    def start_task(self):
+        """
+        🎯 [大腦總入口] 保持原本「無引數」的傳統
+        直接讀取類別內部儲存的模式變數來進行分流
+        """
+        self.is_running = True
+        
+        # 從大腦自己身上（或是 UI 變數上）取得當前選擇的模式
+        # 假設你原本是用 self.job_type 來存
+        mode = self.job_type
+        
+        try:
+            if mode == "game_ad":
+                self.run()
+                
+            elif mode == "step_ad":
+                self.run()
+                
+            elif mode == "lottery":
+                self.start_lottery_task()
+                
+        except Exception as e:
+            logger.error(f"💥 任務執行期間發生未預期錯誤: {e}", exc_info=True)
+        finally:
+            self.is_running = False
+            logger.info("🏁 任務已結束，大腦進入休眠狀態。")
+
     def run(self, close_app : bool = False):
         """ 永遠只有薄薄一層的主迴圈，再也沒有巢狀 if！ """
-        self.adb.connect()   #還沒寫UI 暫時先在這邊呼叫adb連線
+        self.adb.connect() 
+
+        self.state_handlers = {
+            "IDLE": self.handle_idle,
+            "WAIT_CONFIRM": self.handle_wait_confirm,
+            "WATCHING_AD": self.handle_watching_ad,
+        }
+
         logger.info("🚀 啟動狀態機模式！")
+        # 🌟 設定初始狀態
+        self.current_state = "IDLE"
+        self._run_state_machine(initial_state="IDLE")
+
+        is_step_ad = self.task.get("name") == "步數廣告"
+        should_auto_lottery = getattr(self, 'auto_lottery_enabled', False)
+
+        if is_step_ad and should_auto_lottery:
+            logger.info("🔗 連動機制觸發：步數廣告已看完，直接無縫轉入自動抽獎！")
+            smart_sleep(2)
+            self.start_lottery_task()  # 👈 無縫接軌抽獎
+
+        if close_app:
+            self.adb.stop_app()
+
+    def start_lottery_task(self):
+        """
+        🎯 [抽獎任務總入口] 供 UI 按鈕直接呼叫
+        這個函數會接管主執行緒，直到抽獎券抽光或被手動停止。
+        """
+        logger.info("🎬 UI 觸發：啟動自動抽獎任務程序...")
+        self.draw_start_time = None
+
+        self.adb.connect() 
+        # 1. 🌟 初始化狀態：第一步是要去尋找入口
+        current_state = "LOTTERY_NAVIGATE"
+
+        self.state_handlers = {
+            "LOTTERY_NAVIGATE": self.handle_lottery_navigate,
+            "LOTTERY_LOOP": self.handle_lottery_loop,
+            "LOTTERY_RESTART": self.handle_lottery_restart,
+        }
+        # 2. 狀態機主驅動迴圈
+        self._run_state_machine(initial_state="LOTTERY_NAVIGATE")
+                
+        logger.info("🏁 自動抽獎任務已優雅結束。")
+        
+    def _run_state_machine(self, initial_state: str):
+        """ ⚙️ [狀態機驅動核心] 負責調度與防禦性例外處理 """
+        self.current_state = initial_state
+
         try:
             while self.current_state != "DONE":
-                check_stop()
-                # 從字典裡拿出當前狀態該執行的函數
+                check_stop()  # 1. 隨時回應 UI 停止訊號
+
                 handler = self.state_handlers.get(self.current_state)
-                
-                if handler:
-                    # 執行該函數，函數會回傳「下一個狀態」給我們！
-                    self.current_state = handler()
-                else:
+                if not handler:
                     logger.error(f"❌ 未知狀態：{self.current_state}")
                     break
+
+                try:
+                    # 2. 執行狀態函數，並取得下一個狀態
+                    self.current_state = handler()
+
+                except AppStopException:
+                    # 🌟 收到停止命令，直接向上拋出，不做防禦重啟
+                    raise
+
+                except Exception as e:
+                    # 🛡️ 捕捉狀態內部未預期的崩潰，走防禦性重啟
+                    logger.critical(f"💥 狀態 [{self.current_state}] 遭遇未預期崩潰: {e}", exc_info=True)
                     
-                time.sleep(1) # 讓迴圈稍微喘口氣
-                
-            logger.info("🏁 任務圓滿結束！")
-            if close_app:
-                self.adb.stop_app()
+                    # 若在抽獎流程崩潰，轉向抽獎重啟；廣告流程則轉向 IDLE 或結束
+                    if "LOTTERY" in self.current_state:
+                        self.current_state = "LOTTERY_RESTART"
+                    else:
+                        self.current_state = "IDLE"
+                        
+                    smart_sleep(3)
+
+                time.sleep(1)
+
         except AppStopException as e:
-            # 🌟 攔截網：不管是 ADB、Vision 還是 sleep 拋出的自爆，都會在這裡被接住
             logger.info(f"🛑 收到總部停止命令，已安全撤退: {e}")
         finally:
             logger.info(">>> 機器人資源清理完畢。")
-        
-
     #==========================================
     #--------------I NEED HEALING--------------
     #==========================================
     def navigate_to_ad_entry(self, force_restart=False):
         """
         從任何地方啟動並導航至廣告入口
-        回傳值: "WATCHING_AD" (成功點擊入口) 或 "ERROR" (超時或失敗)
         """
         logger.info("🚀 啟動全域導航程序...")
         
@@ -135,7 +213,7 @@ class AdWatcherBot:
             # 🎯 優先目標：尋找廣告入口按鈕
             target_name, coords = self.vision.find_and_get_pos(
                 screen, 
-                "AD_ENTRY_BUTTON.png", 
+                self.task["portal"], 
                 threshold=0.8
             )
             
@@ -147,7 +225,6 @@ class AdWatcherBot:
             else: self.check_and_clear_error(screen)
             
 
-            # 3. 盲等區與除障機制 (Wiper)
 
             # 如果還沒看到入口，可能原因：1. 還在載入 2. 被每日登入/公告彈窗擋住 3. 卡在子選單
             logger.info("🔍 尚未看見入口，尋找中...(可能被彈窗遮擋或載入中)")
@@ -332,6 +409,8 @@ class AdWatcherBot:
                     if self.kidnap_count <= 2:
                         logger.info("實施溫和遣返：按下實體返回鍵...")
                         self.adb.press_back()
+                        smart_sleep(0.2)
+                        self.adb.press_back()
                         smart_sleep(2)
                         return "WATCHING_AD"
                     else:
@@ -352,6 +431,85 @@ class AdWatcherBot:
         smart_sleep(3) 
         return "WATCHING_AD"
 
+    # ================抽獎狀態===================
+    def handle_lottery_navigate(self):
+        """ 🤖 狀態 1：全域導航至抽抽樂頁面 """
+        check_stop()
+        screen = self.adb.get_screenshot()
+        if screen is None: return "LOTTERY_NAVIGATE"
+        
+        # 🎯 尋找進入抽抽樂的入口 (圖片 A)
+        target, coords = self.vision.find_and_get_pos(screen, self.task["portal"], threshold=0.8)
+        if coords:
+            logger.info("🎉 成功找到抽抽樂入口，點擊進入！")
+            self.adb.tap(*coords)
+            smart_sleep(2) # 等待切換動畫
+            return "LOTTERY_LOOP" # 順利進入，切換到核心抽獎循環
+            
+        # 🛡️ 如果迷路了（可能被公告擋住），可以呼叫之前的 check_and_clear_error
+        self.check_and_clear_error(screen)
+        logger.warning("🔍 沒看到抽抽樂入口，等待載入中...")
+        smart_sleep(2)
+        return "LOTTERY_NAVIGATE"
+
+    def handle_lottery_loop(self):
+        """ 🤖 狀態 2：核心抽獎循環 (利用類別屬性做非阻塞式超時偵測) """
+        check_stop()
+        screen = self.adb.get_screenshot()
+        if screen is None: return "LOTTERY_LOOP"
+        
+        # 1. 🎯 優先判定：是否出現中獎、領取視窗 (圖片 C)
+        c_target, c_coords = self.vision.find_and_get_pos(screen, self.task["draw"], threshold=0.8)
+        if c_coords:
+            logger.info("🎁 抽到獎勵！點擊『領取』按鈕...")
+            self.adb.tap(*c_coords)
+            self.draw_start_time = None # 🌟 成功領取，重置計時器！
+            smart_sleep(0.2)
+            return "LOTTERY_LOOP"
+
+        # 2. 🎯 常規操作：尋找「按抽」按鈕 (圖片 B)
+        # 🌟 加上限制：只有在「沒有正在等待開獎」的情況下，才能繼續戳 B
+        if getattr(self, 'draw_start_time', None) is None:
+            b_target, b_coords = self.vision.find_and_get_pos(screen, self.task["confirm"], threshold=0.8)
+            if b_coords:
+                logger.info("👇 戳一下『抽獎』按鈕！貼上時間標記...")
+                self.adb.tap(*b_coords)
+                self.draw_start_time = time.time() # 🌟 紀錄開始等待開獎的時間
+                smart_sleep(1)
+                return "LOTTERY_LOOP"
+
+        # 3. ⏳ 超時防禦機制：如果走到這裡，代表「沒看到 C」而且「之前已經戳過 B 了」
+        start_time = getattr(self, 'draw_start_time', None)
+        if start_time is not None:
+            elapsed_time = time.time() - start_time
+            
+            # 狀況 A：還在 10 秒的動畫寬容期內
+            if elapsed_time < 10:
+                logger.info(f"⏳ 等待開獎動畫中... 已耗時 {elapsed_time:.1f} 秒")
+                smart_sleep(0.5) # 稍微喘息一下，防止截圖太狂暴
+                return "LOTTERY_LOOP" # 丟回大迴圈，下一輪繼續進來巡邏
+                
+            # 狀況 B：撐滿 10 秒了 C 都沒出來 -> 真的翻車了
+            else:
+                logger.error("💥 抽獎動畫超時！戳了 B 之後 10 秒內未看見領取畫面。")
+                self.draw_start_time = None # 記得清空
+                return "LOTTERY_RESTART"
+
+        # 4. 🛑 兜底異常：一進來既沒 B 沒 C，身上也沒計時器，代表直接迷路
+        logger.error("🚨 進入抽獎區卻找不到任何可操作物件，觸發斷頭重製...")
+        return "LOTTERY_RESTART"
+
+    def handle_lottery_restart(self):
+        """ 🤖 狀態 3：發生意外，暴力殺 App 重啟 """
+        check_stop()
+        logger.warning("♻️ 執行防禦性重啟：強制關閉 App 並重新初始化...")
+        
+        # 呼叫你改好的鐵血重啟底層
+        self.adb.restart_app(self.adbconfig.TARGET_APP_PACKAGE)
+        smart_sleep(8) # 冷啟動給予充分時間
+        
+        # 重啟完成後，完美接回第一步
+        return "LOTTERY_NAVIGATE"
 # ==========================================
 # 程式進入點
 # ==========================================

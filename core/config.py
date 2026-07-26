@@ -57,10 +57,16 @@ class TaskProfiles:
     STEP_AD = {
         "name": "步數廣告",
         "portal":["STEP_AD_ENTRY_BUTTON.png"],
-        "empty": ["step_ad_empty.png"],
+        "empty":["step_ad_empty.png"],
         "entry":["step_ad_entry.png"],
         "confirm": ["step_ad_confirm.png"],
         "reward": ["ad_reward.png"]
+    }
+    LOTTERY = {
+        "name":"自動抽獎",
+        "portal":["lottery_portal.png"],
+        "draw":["lottery_draw_button.png"],
+        "confirm":["ad_reward.png"]
     }
 
 LOG_DIR = BASE_DIR / "logs"
